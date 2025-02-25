@@ -7,6 +7,7 @@ const jwt=require("jsonwebtoken")
 const { usermodel } = require("./models/user")
 const ClinicModel = require("./models/clinic")
 const { Doctorpostmodel } = require("./models/doctor")
+const BookClinicModel = require("./models/clinicbook")  
 
 let app=express();
 app.use(cors());
@@ -96,38 +97,34 @@ mongoose.connect("mongodb+srv://sreerag:sreerag@cluster0.onuj57g.mongodb.net/Hai
   
   // Clinic Signup API
   app.post("/clinic-signup", upload.single("image"), async (req, res) => {
-      const input = req.body;
-  
-      try {
-          // Hash the password
-          const hashedPassword = bcrypt.hashSync(input.password, 10);
-          input.password = hashedPassword;
-  
-          // Check if the email already exists
-          const existingClinic = await ClinicModel.findOne({ email: input.email });
-          if (existingClinic) {
-              return res.json({ status: "email already exists" });
-          }
-  
-          // Assign the uploaded image path
-          if (req.file) {
-              input.image = `/uploads/clinicImages/${req.file.filename}`;
-          }
-  
-          // Create and save the new clinic
-          const newClinic = new ClinicModel(input);
-          await newClinic.save();
-  
-          // Generate JWT token
-          const token = jwt.sign({ email: input.email }, "HairClinicApp", { expiresIn: "1d" });
-  
-          // Respond to the client
-          res.json({ status: "success", token, imageUrl: input.image });
-      } catch (error) {
-          console.error("Error saving clinic:", error);
-          res.json({ status: "error", message: error.message });
-      }
-  });
+    const input = req.body;
+
+    try {
+        const hashedPassword = bcrypt.hashSync(input.password, 10);
+        input.password = hashedPassword;
+
+        const existingClinic = await ClinicModel.findOne({ email: input.email });
+        if (existingClinic) {
+            return res.json({ status: "email already exists" });
+        }
+
+        // Ensure correct image path
+        if (req.file) {
+            input.image = `/uploads/${req.file.filename}`; // Corrected
+        }
+
+        const newClinic = new ClinicModel(input);
+        await newClinic.save();
+
+        const token = jwt.sign({ email: input.email }, "HairClinicApp", { expiresIn: "1d" });
+
+        res.json({ status: "success", token, clinic: newClinic });
+    } catch (error) {
+        console.error("Error saving clinic:", error);
+        res.json({ status: "error", message: error.message });
+    }
+});
+
   app.post("/clinic-signin", async (req, res) => {
     try {
         let input = req.body;
@@ -157,6 +154,21 @@ mongoose.connect("mongodb+srv://sreerag:sreerag@cluster0.onuj57g.mongodb.net/Hai
     } catch (error) {
         console.error("Login Error:", error);
         res.json({ status: "error", message: error.message });
+    }
+});
+app.get('/viewallclinics', async (req, res) => {
+    try {
+        const clinics = await ClinicModel.find({});
+        const baseUrl = "http://localhost:3031"; // Ensure your frontend uses this
+
+        const updatedClinics = clinics.map(clinic => ({
+            ...clinic.toObject(),
+            image: clinic.image ? `${baseUrl}${clinic.image}` : null
+        }));
+
+        res.json({ status: "success", data: updatedClinics });
+    } catch (error) {
+        res.status(500).json({ status: "error", message: error.message });
     }
 });
 
@@ -209,7 +221,101 @@ app.post("/add-doctor", async (req, res) => {
         res.status(500).json({ status: "error", message: "Internal Server Error" });
     }
 });
+app.get("/clinic/:id", async (req, res) => {
+    try {
+        const clinic = await ClinicModel.findById(req.params.id);
+        if (!clinic) {
+            return res.status(404).json({ status: "error", message: "Clinic not found" });
+        }
 
+        // ✅ Fix Image Path
+        const baseUrl = "http://localhost:3031"; // Change this to your actual backend URL
+        clinic.image = clinic.image?.startsWith("/") ? `${baseUrl}${clinic.image}` : clinic.image;
+
+        res.json({ status: "success", data: clinic });
+    } catch (error) {
+        console.error("Error fetching clinic:", error);
+        res.status(500).json({ status: "error", message: error.message });
+    }
+});
+app.get("/clinic/:id/doctors", async (req, res) => {
+    try {
+        const clinicId = req.params.id;
+        const doctors = await Doctorpostmodel.find({ userId: clinicId });
+
+        if (!doctors || doctors.length === 0) {
+            return res.json({ status: "success", message: "No doctors found for this clinic", data: [] });
+        }
+
+        res.json({ status: "success", data: doctors });
+    } catch (error) {
+        console.error("Error fetching doctors:", error);
+        res.status(500).json({ status: "error", message: error.message });
+    }
+});
+app.post("/api/bookings/book", async (req, res) => {
+    try {
+        const { userId, clinicId, doctorId, userName, clinicName, doctorName, bookingDate, slotTime } = req.body;
+
+        // Validate required fields
+        if (!userId || !clinicId || !doctorId || !userName || !clinicName || !doctorName || !bookingDate || !slotTime) {
+            return res.status(400).json({ status: "error", error: "All fields are required" });
+        }
+
+        // Validate MongoDB ObjectIds
+        if (!mongoose.Types.ObjectId.isValid(userId) || 
+            !mongoose.Types.ObjectId.isValid(clinicId) || 
+            !mongoose.Types.ObjectId.isValid(doctorId)) {
+            return res.status(400).json({ status: "error", error: "Invalid ID format" });
+        }
+
+        // Parse bookingDate as date-only (YYYY-MM-DD)
+        const bookingDateObj = new Date(bookingDate);
+        if (isNaN(bookingDateObj.getTime())) {
+            return res.status(400).json({ status: "error", error: "Invalid booking date" });
+        }
+        // Set time to 00:00:00 UTC to store only date
+        bookingDateObj.setUTCHours(0, 0, 0, 0);
+
+        // Check for existing booking with exact date and slot
+        const existingBooking = await BookClinicModel.findOne({
+            doctorId: new mongoose.Types.ObjectId(doctorId),
+            bookingDate: bookingDateObj,
+            slotTime: slotTime
+        });
+
+        if (existingBooking) {
+            return res.status(400).json({ 
+                status: "error", 
+                error: "This time slot is already booked for this doctor on this date" 
+            });
+        }
+
+        // Save the new booking with date-only values
+        const newBooking = new BookClinicModel({
+            userId: new mongoose.Types.ObjectId(userId),
+            clinicId: new mongoose.Types.ObjectId(clinicId),
+            doctorId: new mongoose.Types.ObjectId(doctorId),
+            userName,
+            clinicName,
+            doctorName,
+            bookingDate: bookingDateObj,
+            slotTime,
+            createdAt: new Date().setUTCHours(0, 0, 0, 0) // Override default to date-only
+        });
+
+        const savedBooking = await newBooking.save();
+        res.status(201).json({ 
+            status: "success", 
+            message: "Booking successful", 
+            booking: savedBooking 
+        });
+
+    } catch (error) {
+        console.error("Error booking appointment:", error);
+        res.status(500).json({ status: "error", error: "Internal Server Error: " + error.message });
+    }
+});
   app.listen(3031,()=>{
     console.log("server started ")
 })
