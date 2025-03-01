@@ -8,6 +8,7 @@ const { usermodel } = require("./models/user")
 const ClinicModel = require("./models/clinic")
 const { Doctorpostmodel } = require("./models/doctor")
 const BookClinicModel = require("./models/clinicbook")  
+const ProductCompanyModel = require("./models/Product")
 
 let app=express();
 app.use(cors());
@@ -154,6 +155,68 @@ mongoose.connect("mongodb+srv://sreerag:sreerag@cluster0.onuj57g.mongodb.net/Hai
     } catch (error) {
         console.error("Login Error:", error);
         res.json({ status: "error", message: error.message });
+    }
+});
+app.post("/company-signup", upload.single("brandLogo"), async (req, res) => {
+    try {
+        const input = req.body;
+
+        // ✅ Hash password before saving
+        const hashedPassword = bcrypt.hashSync(input.password, 10);
+        input.password = hashedPassword;
+
+        // ✅ Check if the company email already exists
+        const existingCompany = await ProductCompanyModel.findOne({ email: input.email });
+        if (existingCompany) {
+            return res.json({ status: "email already exists" });
+        }
+
+        // ✅ Ensure correct image path
+        if (req.file) {
+            input.brandLogo = `/uploads/brandLogos/${req.file.filename}`;
+        }
+
+        // ✅ Create and save new company
+        const newCompany = new ProductCompanyModel(input);
+        await newCompany.save();
+
+        // ✅ Generate JWT token
+        const token = jwt.sign({ email: input.email, id: newCompany._id }, "ProductCompanySecretKey", { expiresIn: "1d" });
+
+        res.json({ status: "success", token, company: newCompany });
+    } catch (error) {
+        console.error("Error saving company:", error);
+        res.status(500).json({ status: "error", message: error.message });
+    }
+});
+app.post("/company-login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        const company = await ProductCompanyModel.findOne({ email });
+        if (!company) {
+            return res.json({ status: "incorrect email" });
+        }
+
+        const passwordMatch = bcrypt.compareSync(password, company.password);
+        if (!passwordMatch) {
+            return res.json({ status: "incorrect password" });
+        }
+
+        const token = jwt.sign({ email: company.email, id: company._id }, "ProductCompanySecretKey", { expiresIn: "1d" });
+
+        // Prepend base URL to brandLogo for consistency
+        const fullBrandLogo = `http://localhost:3031${company.brandLogo}`;
+
+        res.json({ 
+            status: "success", 
+            token, 
+            company: { ...company._doc, brandLogo: fullBrandLogo } 
+        });
+
+    } catch (error) {
+        console.error("Login Error:", error);
+        res.status(500).json({ status: "error", message: error.message });
     }
 });
 app.get('/viewallclinics', async (req, res) => {
